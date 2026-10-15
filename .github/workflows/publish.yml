@@ -1,0 +1,63 @@
+# Publica a imagem no Docker Hub, em amd64 e arm64.
+#
+# SO SOB PEDIDO, pelo "Run workflow": rodar e a decisao de publicar.
+#
+# O NOME E GENERICO (`postgres`), e a TAG DIZ O QUE A IMAGEM TEM: a versao maior
+# do Postgres, o Debian da base, o pgvector e o `pg_search`
+# (`pg16-bookworm-pgvector-0.8.7-pg_search-0.26.1`). Ela vem dos argumentos do
+# Dockerfile, e nao de um campo digitado aqui: cada versao existe num lugar so,
+# e mudar qualquer uma delas publica outra tag. Uma tag que ja existe nao e
+# sobrescrita: a imagem em uso continua a mesma.
+name: Publish
+
+on:
+  workflow_dispatch:
+
+env:
+  DOCKER_REPO: lucaspeixotoadv/postgres
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set Docker tag
+        run: |
+          arg() { sed -n "s/^ARG $1=//p" Dockerfile; }
+          pg_major=$(arg PG_MAJOR); debian=$(arg DEBIAN)
+          pgvector=$(arg PGVECTOR_VERSION); pg_search=$(arg PG_SEARCH_VERSION)
+          test -n "$pg_major" && test -n "$debian" && test -n "$pgvector" && test -n "$pg_search"
+          echo "DOCKER_TAG=${DOCKER_REPO}:pg${pg_major}-${debian}-pgvector-${pgvector}-pg_search-${pg_search}" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Publicar e acrescentar uma tag, nunca trocar o conteudo de uma que ja
+      # existe: quem esta rodando aquela tag continua com a mesma imagem.
+      - name: Refuse an existing tag
+        run: |
+          if docker buildx imagetools inspect "$DOCKER_TAG" >/dev/null 2>&1; then
+            echo "::error::$DOCKER_TAG already exists. Change a version in the Dockerfile to publish a new tag."
+            exit 1
+          fi
+
+      # Nada se compila aqui -- so se instala um pacote --, e por isso as duas
+      # arquiteturas saem do mesmo runner, a arm64 pelo QEMU.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.DOCKER_TAG }}
